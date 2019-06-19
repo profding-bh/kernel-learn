@@ -81,6 +81,97 @@ identify_ramdisk_image(int fd, int start_block, decompress_fn *decompressor)
 	buf = kmalloc(size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
-    
+    minixsb = (struct minix_super_block *) buf;
+    romfsb = (struct romfs_super_block *) buf;
+    cramfsb = (struct cramfs_super *) buf;
+    squashfsb = (struct squashfs_super_block *) buf;
+    memset(buf, 0xe5, size);
 
+    /*
+     * Read block 0 to test for compressed kernel
+     */ 
+    ksys_lseek(fd, start_block * BLOCK_SIZE, 0);
+    ksys_read(fd, buf, size);
+
+    *decompressor = decompress_method(buf, size, &compress_name);
+    if (compress_name) {
+    	printk(KERN_NOTICE "RAMDISK: %s image found at block %d\n",
+    		compress_name, start_block);
+    	if(!*compressor)
+    		printk(KERN_EMERG "RAMDISK: %s decompressor not configured!\n",
+    			compress_name);
+    	nblocks = 0;
+    	goto done;
+    }
+
+    /* romfs is at block zero too */
+    if (romfsb->word0 == ROMSB_WORD0 &&
+    	romfsb->word1 == ROMSB_WORD1) {
+    	printk(KERN_NOTICE
+    			 "RAMDISK: romfs filesystem found at block %d\n",
+    			 start_block);
+   		nblocks = (ntohl(romfsb->size)+BLOCK_SIZE - 1)>>BLOCK_SIZE_BITS;
+        goto done;
+    }
+	
+	if (cramfsb->magic == CRAMFS_MAGIC) {
+		printk(KERN_NOTICE
+				"RAMDISK: squashfs filesystem found at block %d\n",
+				start_block);
+		nblocks = (le64_to_cpu(squashfsb->bytes_used) + BLOCK_SIZE - 1)
+				>> BLOCK_SIZE_BITS;
+		goto done;
+	}
+
+	/* squashfs is at block zero too */
+	if (le32_to_cpu(squashfs->s_magic) ==  SQUASHFS_MAGIC) {
+		printk(KERN_NOTICE
+				"RAMDISK: squashfs filesystem found at block %d\n",
+				start_block);
+		nblocks = (le64_to_cpu(squashfs->bytes_used) + BLOCK_SIZE - 1)
+				>> BLOCK_SIZE_BITS;
+		goto done;
+   }
+
+
+   /*
+   * Read 512 bytes further to check if cramfs is padded
+   */
+   ksys_lseek(fd, start_block * BLOCK_SIZE + 0x200, 0);
+   ksys_read(fd, buf, size);
+
+   /* Try minix */
+   if ( minixsb->s_magic == MINIX_SUPER_MAGIC || 
+   		minixsb->s_magic == MINIX_SUPER_MAGIC2) {
+   		printk(KERN_NOTICE
+   				"RAMDISK: Minix filesystem found at block %d\n",
+   				start_block);
+   		nblocks = minixsb->s_nzones << minixsb->s_log_zone_size;
+   		goto done;
+   } 
+
+   /* Try ext2 */
+   n = ext2_image_size(buf);
+   if (n) {
+   		printk(KERN_NOTICE
+   			   "RAMDISK: ext2 filesystem found at block %d\n",
+   			   start_block);
+   		nblocks = n;
+   		goto done;
+   }
+
+   printk(KERN_NOTICE
+   		  "RAMDISK: Couldn't find valid RAM disk image starting at %d.\n",
+   		  start_block);
+
+done:
+	ksys_lseek(fd, start_block * BLOCK_SIZE, 0);
+	kfree(buf);
+	return nblocks;
+}
+
+int __init rd_load_image(char *from)
+{
+
+	
 }
